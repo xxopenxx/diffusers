@@ -1,12 +1,19 @@
+# "Improved" DreamBooth training
+
+If you want to use the "improved" Dreambooth training, add `--shuffle_after_epoch` to your launch.sh.
+
+This usually requires fewer class images than regular training. I had great results with the same number of class and instance images (eg 20 & 20).
+
+# Reduce VRAM requirements
 To reduce VRAM usage to 9.92 GB, pass `--gradient_checkpointing` and `--use_8bit_adam` flag to use 8 bit adam optimizer from [bitsandbytes](https://github.com/TimDettmers/bitsandbytes).
 
 Model with just [xformers](https://github.com/facebookresearch/xformers) memory efficient flash attention uses 15.79 GB VRAM with `--gradient_checkpointing` else 17.7 GB. Both have no loss in precision at all. gradient_checkpointing recalculates intermediate activations to save memory at cost of some speed.
 
 Caching the outputs of VAE and Text Encoder and freeing them also helped in reducing memory.
 
-You can now convert to ckpt format using this script to use in UIs like AUTOMATIC1111. https://github.com/ShivamShrirao/diffusers/raw/main/scripts/convert_diffusers_to_original_stable_diffusion.py Check colab notebook for example usage.
+You can now convert to ckpt format using this script to use in UIs like AUTOMATIC1111. https://github.com/InB4DevOps/diffusers/raw/main/scripts/convert_diffusers_to_original_stable_diffusion.py Check colab notebook for example usage.
 
-[![DreamBooth Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ShivamShrirao/diffusers/blob/main/examples/dreambooth/DreamBooth_Stable_Diffusion.ipynb)
+[![DreamBooth Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/InB4DevOps/diffusers/blob/main/examples/dreambooth/DreamBooth_Stable_Diffusion.ipynb)
 
 Use the table below to choose the best flags based on your memory and speed requirements. Tested on Tesla T4 GPU.
 
@@ -34,7 +41,7 @@ The `train_dreambooth.py` script shows how to implement the training procedure a
 Before running the scripts, make sure to install the library's training dependencies:
 
 ```bash
-pip install git+https://github.com/ShivamShrirao/diffusers.git
+pip install git+https://github.com/InB4DevOps/diffusers.git
 pip install -U -r requirements.txt
 ```
 
