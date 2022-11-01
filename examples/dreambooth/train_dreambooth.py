@@ -745,7 +745,7 @@ def main(args):
         unet.train()
         if args.train_text_encoder:
             text_encoder.train()
-        if args.shuffle_after_epoch and (global_step > len(train_dataset)):
+        if args.shuffle_after_epoch and (global_step >= len(train_dataset)):
             if vae is None:
                 vae = create_vae(accelerator.device, weight_dtype)
             train_dataset, train_dataloader = cache_latents(train_dataset, train_dataloader, vae)
