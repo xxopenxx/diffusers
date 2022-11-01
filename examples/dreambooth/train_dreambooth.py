@@ -131,6 +131,9 @@ def parse_args(input_args=None):
         ),
     )
     parser.add_argument(
+        "--shuffle_after_epoch", action="store_true", help="Whether or not to shuffle and recache training dataset after every epoch."
+    )
+    parser.add_argument(
         "--output_dir",
         type=str,
         default="text-inversion-model",
@@ -280,6 +283,7 @@ class DreamBoothDataset(Dataset):
 
         self.instance_images_path = []
         self.class_images_path = []
+        self.class_images_randomizer_stack = []
 
         for concept in concepts_list:
             inst_img_path = [(x, concept["instance_prompt"]) for x in Path(concept["instance_data_dir"]).iterdir() if x.is_file()]
@@ -307,6 +311,16 @@ class DreamBoothDataset(Dataset):
     def __len__(self):
         return self._length
 
+    def _get_random_class_image_index(self):
+        if len(self.class_images_randomizer_stack) == 0:
+            self.class_images_randomizer_stack = [x for x in range(self.num_class_images)]
+
+        random_index = random.randint(
+            0,
+            len(self.class_images_randomizer_stack) - 1)
+        result = self.class_images_randomizer_stack.pop(random_index)
+        return result
+
     def __getitem__(self, index):
         example = {}
         instance_path, instance_prompt = self.instance_images_path[index % self.num_instance_images]
@@ -322,7 +336,8 @@ class DreamBoothDataset(Dataset):
         ).input_ids
 
         if self.with_prior_preservation:
-            class_path, class_prompt = self.class_images_path[index % self.num_class_images]
+            class_path, class_prompt = self.class_images_path[
+                self._get_random_class_image_index()]
             class_image = Image.open(class_path)
             if not class_image.mode == "RGB":
                 class_image = class_image.convert("RGB")
@@ -490,18 +505,29 @@ def main(args):
         subfolder="text_encoder",
         revision=args.revision,
     )
-    vae = AutoencoderKL.from_pretrained(
-        args.pretrained_model_name_or_path,
-        subfolder="vae",
-        revision=args.revision,
-    )
     unet = UNet2DConditionModel.from_pretrained(
         args.pretrained_model_name_or_path,
         subfolder="unet",
         revision=args.revision,
     )
 
-    vae.requires_grad_(False)
+    def create_vae(device, weight_dtype):
+        result = AutoencoderKL.from_pretrained(
+            args.pretrained_model_name_or_path,
+            subfolder="vae",
+            revision=args.revision,
+        )
+        result.requires_grad_(False)
+        result.to(device, dtype=weight_dtype)
+        return result
+
+    weight_dtype = torch.float32
+    if args.mixed_precision == "fp16":
+        weight_dtype = torch.float16
+    elif args.mixed_precision == "bf16":
+        weight_dtype = torch.bfloat16
+
+    vae = create_vae(accelerator.device, weight_dtype)
     if not args.train_text_encoder:
         text_encoder.requires_grad_(False)
 
@@ -543,15 +569,6 @@ def main(args):
         beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", num_train_timesteps=1000
     )
 
-    train_dataset = DreamBoothDataset(
-        concepts_list=args.concepts_list,
-        tokenizer=tokenizer,
-        with_prior_preservation=args.with_prior_preservation,
-        size=args.resolution,
-        center_crop=args.center_crop,
-        num_class_images=args.num_class_images,
-    )
-
     def collate_fn(examples):
         input_ids = [example["instance_prompt_ids"] for example in examples]
         pixel_values = [example["instance_images"] for example in examples]
@@ -573,24 +590,32 @@ def main(args):
         }
         return batch
 
-    train_dataloader = torch.utils.data.DataLoader(
-        train_dataset, batch_size=args.train_batch_size, shuffle=True, collate_fn=collate_fn, pin_memory=True
-    )
-
-    weight_dtype = torch.float32
-    if args.mixed_precision == "fp16":
-        weight_dtype = torch.float16
-    elif args.mixed_precision == "bf16":
-        weight_dtype = torch.bfloat16
-
     # Move text_encode and vae to gpu.
     # For mixed precision training we cast the text_encoder and vae weights to half-precision
     # as these models are only used for inference, keeping weights in full precision is not required.
-    vae.to(accelerator.device, dtype=weight_dtype)
+
     if not args.train_text_encoder:
         text_encoder.to(accelerator.device, dtype=weight_dtype)
 
-    if not args.not_cache_latents:
+    def cache_latents(train_dataset=None, train_dataloader=None, vae=None):
+        if train_dataset is not None:
+            del train_dataset
+        if train_dataloader is not None:
+            del train_dataloader
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        train_dataset = DreamBoothDataset(
+            concepts_list=args.concepts_list,
+            tokenizer=tokenizer,
+            with_prior_preservation=args.with_prior_preservation,
+            size=args.resolution,
+            center_crop=args.center_crop,
+            num_class_images=args.num_class_images,
+        )
+        train_dataloader = torch.utils.data.DataLoader(
+            train_dataset, batch_size=args.train_batch_size, shuffle=True, collate_fn=collate_fn, pin_memory=True
+        )
+
         latents_cache = []
         text_encoder_cache = []
         for batch in tqdm(train_dataloader, desc="Caching latents"):
@@ -604,12 +629,16 @@ def main(args):
                     text_encoder_cache.append(text_encoder(batch["input_ids"])[0])
         train_dataset = LatentsDataset(latents_cache, text_encoder_cache)
         train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=1, collate_fn=lambda x: x, shuffle=True)
-
         del vae
         if not args.train_text_encoder:
             del text_encoder
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+        return train_dataset, train_dataloader
+
+    if not args.not_cache_latents:
+        train_dataset, train_dataloader = cache_latents(vae=vae)
 
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
@@ -716,6 +745,10 @@ def main(args):
         unet.train()
         if args.train_text_encoder:
             text_encoder.train()
+        if args.shuffle_after_epoch and (global_step > len(train_dataset)):
+            if vae is None:
+                vae = create_vae(accelerator.device, weight_dtype)
+            train_dataset, train_dataloader = cache_latents(train_dataset, train_dataloader, vae)
         for step, batch in enumerate(train_dataloader):
             with accelerator.accumulate(unet):
                 # Convert images to latent space
