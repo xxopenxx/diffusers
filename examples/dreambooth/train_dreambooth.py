@@ -264,49 +264,40 @@ def parse_args(input_args=None):
 class DreamBoothDataset(Dataset):
     """
     A dataset to prepare the instance and class images with the prompts for fine-tuning the model.
-    It pre-processes the images and the tokenizes prompts.
+    It pre-processes the images and the tokenizer prompts.
     """
 
     def __init__(
         self,
-        concepts_list,
+        inst_img_prompt_tuples,
+        class_img_prompt_tuples,
         tokenizer,
         with_prior_preservation=True,
-        size=512,
+        resolution=512,
         center_crop=False,
-        num_class_images=None
     ):
-        self.size = size
         self.center_crop = center_crop
         self.tokenizer = tokenizer
         self.with_prior_preservation = with_prior_preservation
 
-        self.instance_images_path = []
-        self.class_images_path = []
+        self.inst_img_prompt_tuples = inst_img_prompt_tuples
+        self.class_img_prompt_tuples = class_img_prompt_tuples
         self.class_images_randomizer_stack = []
 
-        for concept in concepts_list:
-            inst_img_path = [(x, concept["instance_prompt"]) for x in Path(concept["instance_data_dir"]).iterdir() if x.is_file()]
-            self.instance_images_path.extend(inst_img_path)
-
-            if with_prior_preservation:
-                class_img_path = [(x, concept["class_prompt"]) for x in Path(concept["class_data_dir"]).iterdir() if x.is_file()]
-                self.class_images_path.extend(class_img_path[:num_class_images])
-
-        random.shuffle(self.instance_images_path)
-        self.num_instance_images = len(self.instance_images_path)
-        self._length = self.num_instance_images
-        self.num_class_images = len(self.class_images_path)
-        self._length = max(self.num_class_images, self.num_instance_images)
+        self.num_inst_images = len(self.inst_img_prompt_tuples)
+        self.num_class_images = len(self.class_img_prompt_tuples)
+        self._length = max(self.num_class_images, self.num_inst_images)
 
         self.image_transforms = transforms.Compose(
             [
-                transforms.Resize(size, interpolation=transforms.InterpolationMode.BILINEAR),
-                transforms.CenterCrop(size) if center_crop else transforms.RandomCrop(size),
+                transforms.Resize(resolution, interpolation=transforms.InterpolationMode.BILINEAR),
+                transforms.CenterCrop(resolution) if center_crop else transforms.RandomCrop(resolution),
                 transforms.ToTensor(),
                 transforms.Normalize([0.5], [0.5]),
             ]
         )
+
+        random.shuffle(self.inst_img_prompt_tuples)
 
     def __len__(self):
         return self._length
@@ -323,7 +314,7 @@ class DreamBoothDataset(Dataset):
 
     def __getitem__(self, index):
         example = {}
-        instance_path, instance_prompt = self.instance_images_path[index % self.num_instance_images]
+        instance_path, instance_prompt = self.inst_img_prompt_tuples[index % self.num_inst_images]
         instance_image = Image.open(instance_path)
         if not instance_image.mode == "RGB":
             instance_image = instance_image.convert("RGB")
@@ -336,7 +327,7 @@ class DreamBoothDataset(Dataset):
         ).input_ids
 
         if self.with_prior_preservation:
-            class_path, class_prompt = self.class_images_path[
+            class_path, class_prompt = self.class_img_prompt_tuples[
                 self._get_random_class_image_index()]
             class_image = Image.open(class_path)
             if not class_image.mode == "RGB":
@@ -350,6 +341,42 @@ class DreamBoothDataset(Dataset):
             ).input_ids
 
         return example
+
+
+class DreamBoothDataSetFactory:
+    def __init__(
+        self,
+        concepts_list,
+        with_prior_preservation,
+        tokenizer,
+        resolution,
+        center_crop,
+        num_class_images
+    ) -> None:
+        self.with_prior_preservation = with_prior_preservation
+        self.tokenizer = tokenizer
+        self.resolution = resolution
+        self.center_crop = center_crop
+        self.inst_img_prompt_tuples = []
+        self.class_img_prompt_tuples = []
+
+        for concept in concepts_list:
+            concept_inst_tuples = [(x, concept["instance_prompt"]) for x in Path(concept["instance_data_dir"]).iterdir() if x.is_file()]
+            self.inst_img_prompt_tuples.extend(concept_inst_tuples)
+
+            if with_prior_preservation:
+                concept_class_tuples = [(x, concept["class_prompt"]) for x in Path(concept["class_data_dir"]).iterdir() if x.is_file()]
+                self.class_img_prompt_tuples.extend(concept_class_tuples[:num_class_images])
+
+    def create(self) -> DreamBoothDataset:
+        return DreamBoothDataset(
+            self.inst_img_prompt_tuples,
+            self.class_img_prompt_tuples,
+            self.tokenizer,
+            self.with_prior_preservation,
+            self.resolution,
+            self.center_crop
+        )
 
 
 class PromptDataset(Dataset):
@@ -597,21 +624,14 @@ def main(args):
     if not args.train_text_encoder:
         text_encoder.to(accelerator.device, dtype=weight_dtype)
 
-    def cache_latents(train_dataset=None, train_dataloader=None, vae=None):
+    def cache_latents(dataset_factory: DreamBoothDataSetFactory, train_dataset=None, train_dataloader=None, vae=None):
         if train_dataset is not None:
             del train_dataset
         if train_dataloader is not None:
             del train_dataloader
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        train_dataset = DreamBoothDataset(
-            concepts_list=args.concepts_list,
-            tokenizer=tokenizer,
-            with_prior_preservation=args.with_prior_preservation,
-            size=args.resolution,
-            center_crop=args.center_crop,
-            num_class_images=args.num_class_images,
-        )
+        train_dataset = dataset_factory.create()
         train_dataloader = torch.utils.data.DataLoader(
             train_dataset, batch_size=args.train_batch_size, shuffle=True, collate_fn=collate_fn, pin_memory=True
         )
@@ -637,8 +657,17 @@ def main(args):
 
         return train_dataset, train_dataloader
 
+    dataset_factory = DreamBoothDataSetFactory(
+        concepts_list=args.concepts_list,
+        with_prior_preservation=args.with_prior_preservation,
+        tokenizer=tokenizer,
+        resolution=args.resolution,
+        center_crop=args.center_crop,
+        num_class_images=args.num_class_images
+    )
+
     if not args.not_cache_latents:
-        train_dataset, train_dataloader = cache_latents(vae=vae)
+        train_dataset, train_dataloader = cache_latents(dataset_factory, vae=vae)
 
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
@@ -743,12 +772,15 @@ def main(args):
     text_enc_context = nullcontext() if args.train_text_encoder else torch.no_grad()
     for epoch in range(args.num_train_epochs):
         unet.train()
+
         if args.train_text_encoder:
             text_encoder.train()
+
         if args.shuffle_after_epoch and (global_step >= len(train_dataset)):
             if vae is None:
                 vae = create_vae(accelerator.device, weight_dtype)
-            train_dataset, train_dataloader = cache_latents(train_dataset, train_dataloader, vae)
+            train_dataset, train_dataloader = cache_latents(dataset_factory, train_dataset, train_dataloader, vae)
+
         for step, batch in enumerate(train_dataloader):
             with accelerator.accumulate(unet):
                 # Convert images to latent space
