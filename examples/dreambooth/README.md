@@ -3,7 +3,7 @@
 If you want to use the "improved" Dreambooth training, add `--shuffle_after_epoch` to your launch.sh.
 
 This usually requires fewer class images than regular training. I had great results with the same number of class and instance images (eg 20 & 20).
-
+Please note, that you cannot run this with `--not_cache_latents` argument.
 # Reduce VRAM requirements
 To reduce VRAM usage to 9.92 GB, pass `--gradient_checkpointing` and `--use_8bit_adam` flag to use 8 bit adam optimizer from [bitsandbytes](https://github.com/TimDettmers/bitsandbytes).
 
