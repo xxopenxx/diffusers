@@ -2,6 +2,13 @@
 
 If you want to use the "improved" Dreambooth training, add `--shuffle_after_epoch` to your launch.sh.
 
+The length of an epoch is the highest of the number of instance images or class images divided by `--gradient_accumulation_steps` (I'm using `1`).  
+
+Example: 20 instance images, 200 class images  
+Epoch length: 200 / 1 = 200  
+
+It is advised to use an integer multiple of the epoch length for the `--max_train_steps` argument, eg `--max_train_steps=2000` (epoch length x 10)
+
 This usually requires fewer class images than regular training. I had great results with 200 class images, 20 instance images and 2000 steps.
 Please note, that you cannot run this with `--not_cache_latents` argument.
 For now you also must use the `--train_text_encoder` argument. 
