@@ -4,6 +4,7 @@ If you want to use the "improved" Dreambooth training, add `--shuffle_after_epoc
 
 This usually requires fewer class images than regular training. I had great results with 200 class images, 20 instance images and 2000 steps.
 Please note, that you cannot run this with `--not_cache_latents` argument.
+For now you also must use the `--train_text_encoder` argument. 
 # Reduce VRAM requirements
 To reduce VRAM usage to 9.92 GB, pass `--gradient_checkpointing` and `--use_8bit_adam` flag to use 8 bit adam optimizer from [bitsandbytes](https://github.com/TimDettmers/bitsandbytes).
 
