@@ -1,5 +1,8 @@
 # "Improved" DreamBooth training
 
+This has now also been added to the Dreambooth extension for Automatic1111  
+https://github.com/d8ahazard/sd_dreambooth_extension
+
 If you want to use the "improved" Dreambooth training, add `--shuffle_after_epoch` to your launch.sh.
 
 The length of an epoch is the highest of the number of instance images or class images divided by `--gradient_accumulation_steps` (I'm using `1`).  
